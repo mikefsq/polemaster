@@ -506,3 +506,16 @@ func TestFrameRecoveryRetriesOnlyOnce(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestSettleMarkerCrossesCarryAndUSB(t *testing.T) {
+	f := newFake()
+	c := newCamera(f)
+	c.carry = []byte{7, 0xaa, 0x11}
+	f.frame = []byte{0xcc, 0xee, 9, 1, 2, 3}
+	if err := c.settleOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(c.carry, []byte{1, 2, 3}) {
+		t.Fatalf("lost marker/read-ahead: %v", c.carry)
+	}
+}

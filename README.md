@@ -38,6 +38,10 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="1618", ATTR{idProduct}=="0941", MODE="0666"
 Reload the rules with `sudo udevadm control --reload-rules`, then unplug and
 reconnect the camera.
 
+If a USB frame loses alignment, the driver scans for the next frame boundary
+and retries once. It validates the replacement frame before returning it;
+unrecoverable alignment failures return `ErrMisaligned`.
+
 ## Capture an image
 
 Connect the camera, then run:
