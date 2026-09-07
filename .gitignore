@@ -1,0 +1,13 @@
+*.pgm
+*.pgm.*
+
+firmware/fw/*.rel
+firmware/fw/*.rst
+firmware/fw/*.sym
+firmware/fw/*.lst
+firmware/fw/*.asm
+firmware/fw/*.ihx
+firmware/fw/*.lk
+firmware/fw/*.map
+firmware/fw/*.mem
+firmware/fw/*.hex
