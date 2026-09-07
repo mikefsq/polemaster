@@ -447,7 +447,23 @@ const rxChunk = MaxFrameBytes + frameTrailer
 
 var ErrMisaligned = errors.New("polemaster: the frame stream has slipped out of alignment")
 
+// Frame retries once after locating a new boundary. The rejected pixels are
+// overwritten completely; a partially aligned image is never returned as valid.
 func (c *Camera) Frame(buf []byte) error {
+	err := c.readFrame(buf)
+	if !errors.Is(err, ErrMisaligned) {
+		return err
+	}
+	if recovery := c.settle1(); recovery != nil {
+		return fmt.Errorf("%w; resync failed: %w", err, recovery)
+	}
+	if retry := c.readFrame(buf); retry != nil {
+		return fmt.Errorf("%w; frame retry failed: %w", err, retry)
+	}
+	return nil
+}
+
+func (c *Camera) readFrame(buf []byte) error {
 	if len(buf) < c.FrameBytes() {
 		return fmt.Errorf("polemaster: frame buffer holds %d bytes, need %d",
 			len(buf), c.FrameBytes())
@@ -479,7 +495,8 @@ func (c *Camera) Frame(buf []byte) error {
 		}
 	}
 	if len(c.trail) < len(frameMagic) || [4]byte(c.trail[:4]) != frameMagic {
-		c.carry = nil
+		// The next marker may straddle the rejected trailer and read-ahead.
+		c.carry = append(append([]byte(nil), c.trail...), c.carry...)
 		return fmt.Errorf("%w: the frame ended with % x, expected it to start with % x",
 			ErrMisaligned, c.trail, frameMagic[:])
 	}
@@ -538,16 +555,10 @@ func (c *Camera) settleOnce() error {
 
 	deadline := time.Now().Add(2*(c.exposure+c.FramePeriod()) + 5*time.Second)
 
-	scan := make([]byte, 0, rxChunk+frameTrailer)
+	scan := append(make([]byte, 0, rxChunk+frameTrailer), c.carry...)
+	c.carry = nil
 	seen := 0
 	for {
-		n, err := c.d.BulkRead(c.rx[:settleChunk], time.Until(deadline))
-		if err != nil {
-			c.carry = nil
-			return err
-		}
-		seen += n
-		scan = append(scan, c.rx[:n]...)
 		for i := 0; i+frameTrailer <= len(scan); i++ {
 			if [4]byte(scan[i:i+4]) == frameMagic {
 				c.carry = append(c.carry[:0:0], scan[i+frameTrailer:]...)
@@ -557,6 +568,16 @@ func (c *Camera) settleOnce() error {
 		if len(scan) > frameTrailer-1 {
 			scan = append(scan[:0], scan[len(scan)-(frameTrailer-1):]...)
 		}
+		n, err := c.d.BulkRead(c.rx[:settleChunk], time.Until(deadline))
+		if err != nil {
+			c.carry = nil
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("%w: no bytes arrived while settling", ErrMisaligned)
+		}
+		seen += n
+		scan = append(scan, c.rx[:n]...)
 		if time.Now().After(deadline) {
 			c.carry = nil
 			return fmt.Errorf("%w: no frame marker in the %d bytes that arrived while settling",

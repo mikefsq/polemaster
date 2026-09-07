@@ -1,6 +1,7 @@
 package polemaster
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 	"time"
@@ -441,5 +442,67 @@ func TestFrameRejectsShortBuffer(t *testing.T) {
 	c := newCamera(newFake())
 	if err := c.Frame(make([]byte, c.FrameBytes()-1)); err == nil {
 		t.Error("a buffer smaller than a frame was accepted")
+	}
+}
+
+func TestFrameRecoversStreamOffset(t *testing.T) {
+	for _, depth := range []int{Depth8, Depth12} {
+		for _, offset := range []int{17, Width*Height - 2} {
+			f := newFake()
+			c := newCamera(f)
+			if err := c.SetDepth(depth); err != nil {
+				t.Fatal(err)
+			}
+			for _, v := range []byte{1, 2, 3, 4} {
+				f.frame = append(f.frame, bytes.Repeat([]byte{v}, c.FrameBytes())...)
+				f.frame = append(f.frame, frameMagic[:]...)
+				f.frame = append(f.frame, 7)
+			}
+			f.pos = offset
+			buf := make([]byte, c.FrameBytes())
+			if err := c.Frame(buf); err != nil {
+				t.Fatalf("depth=%d offset=%d: %v", depth, offset, err)
+			}
+			if !bytes.Equal(buf, bytes.Repeat([]byte{3}, len(buf))) {
+				t.Fatalf("depth=%d offset=%d: recovery returned mixed pixels", depth, offset)
+			}
+			if err := c.Frame(buf); err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(buf, bytes.Repeat([]byte{4}, len(buf))) {
+				t.Fatal("next frame lost alignment")
+			}
+		}
+	}
+}
+
+func TestSettleUsesBufferedMarker(t *testing.T) {
+	f := newFake()
+	c := newCamera(f)
+	c.carry = append([]byte{7, 7}, frameMagic[:]...)
+	c.carry = append(c.carry, 9, 1, 2, 3)
+	if err := c.settleOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(c.carry, []byte{1, 2, 3}) || f.pos != 0 {
+		t.Fatalf("carry=%v reads=%d", c.carry, f.pos)
+	}
+}
+
+func TestFrameRecoveryRetriesOnlyOnce(t *testing.T) {
+	f := newFake()
+	c := newCamera(f)
+	f.frame = make([]byte, c.wireFrame())
+	f.frame = append(f.frame, frameMagic[:]...)
+	f.frame = append(f.frame, 0)
+	f.frame = append(f.frame, make([]byte, c.wireFrame())...)
+	// A later good frame must not turn a second misalignment into an unbounded retry.
+	f.frame = append(f.frame, frameMagic[:]...)
+	f.frame = append(f.frame, 0)
+	f.frame = append(f.frame, bytes.Repeat([]byte{3}, c.FrameBytes())...)
+	f.frame = append(f.frame, frameMagic[:]...)
+	f.frame = append(f.frame, 0)
+	if err := c.Frame(make([]byte, c.FrameBytes())); !errors.Is(err, ErrMisaligned) {
+		t.Fatalf("got %v", err)
 	}
 }
